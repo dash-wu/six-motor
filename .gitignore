@@ -1,0 +1,21 @@
+# Keil uVision / MDK-ARM
+MDK-ARM/Cloud/Objects/
+MDK-ARM/Cloud/Listings/
+MDK-ARM/Cloud/*.o
+MDK-ARM/Cloud/*.d
+MDK-ARM/Cloud/*.crf
+MDK-ARM/Cloud/*.lnp
+MDK-ARM/Cloud/*.dep
+MDK-ARM/Cloud/*.map
+MDK-ARM/Cloud/*.htm
+MDK-ARM/Cloud/*.build_log.htm
+MDK-ARM/Cloud/*.lst
+MDK-ARM/*.uvguix.*
+MDK-ARM/*.bak
+MDK-ARM/RTE/
+
+# IDE / OS
+.vs/
+*.swp
+Thumbs.db
+Desktop.ini

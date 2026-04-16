@@ -43,43 +43,52 @@ extern DMA_HandleTypeDef hdma_tim3_ch1;
 #define R04_ARRAY_SIZE(arr) ((uint8_t)(sizeof(arr) / sizeof((arr)[0])))
 #define R04_CMD_DEADBAND 0.20f
 /*
- * 左右与力度对称（前进/后退共用同一套 step_idx 与倍率；后退仅水平目标取反，撑地腿组合不变）：
- * - ②a(step1) B 撑地：左列仅腿2，右列腿4+6 → 单腿加强 ud(3)；平移三足 ud 为 3,7,11。
- * - ⑤a(step6) A 撑地：左列腿1+3，右列仅腿5 → 单腿加强 ud(9)；平移三足 ud 为 1,5,9。
- * - ①(step0)/④(step5) 抬腿：对称地分别加强 B 三足 ud(3,7,11) 与 A 三足 ud(1,5,9)。
- * 单腿与三足平移的 kp/kd 宏各只有一对，step1/step6 共用，保证左右角色在整周期内力度对称。
+ * 左右动作一致性（设计约定，改增益/表时请一起核对）：
+ * - 遥控：同一 R04_CMD_DEADBAND；前进/后退、左转/右转、左平移/右平移 成对对称（通道相反、动作镜像）。
+ * - 前进/后退：同一套 MIT 步序与叠乘宏；后退表内水平已取反，与前进力度对称。
+ * - 原地转：左转/右转共用 R04_TurnInPlaceLeftSteps、同一 R04_TURN_PLANAR_DEG；右转仅在 R04_StepTargetDeg
+ *   对全部水平 fb（偶 motor_idx）取反，竖直 ud 不取反，且转向中不叠 R04_M11_FORWARD_FB_INVERT（免腿6左右转不对称）。
+ * - 侧平移：R04_StrafeRightSteps 为 R04_StrafeLeftSteps 的左右镜像，增益相同。
+ * - ②a/⑤a 单腿竖直加强：②a 仅腿2(ud 序号 3)、⑤a 仅腿5(ud 序号 9)，左中与右中成对，共用同一组 SWING_SINGLE_SIDE 倍率。
+ * - ①/④ 抬腿：B 三足 ud(3,7,11) 与 A 三足 ud(1,5,9) 对称加强。
  */
-/* 前进/后退：step0~2、5~7 三足撑地加 kp/kd；step3~4、8~9 六足撑地时对 ud 另见 HEX_SUPPORT（抑上顶） */
-#define R04_FWD_TRIPOD_STANCE_KP_MUL 1.72f
-#define R04_FWD_TRIPOD_STANCE_KD_MUL 1.34f
+/* 前进/后退：三足撑地叠乘；略低于曾用过的高刚度，整体更接近转向的「轻」手感 */
+#define R04_FWD_TRIPOD_STANCE_KP_MUL 1.58f
+#define R04_FWD_TRIPOD_STANCE_KD_MUL 1.26f
 /* 撑地腿竖直(ud)轴再略顶重力（奇数下标 m2,m4…）；与上行叠乘 */
-#define R04_FWD_TRIPOD_STANCE_UD_KP_MUL 1.10f
-#define R04_FWD_TRIPOD_STANCE_UD_KD_MUL 1.08f
+#define R04_FWD_TRIPOD_STANCE_UD_KP_MUL 1.04f
+#define R04_FWD_TRIPOD_STANCE_UD_KD_MUL 1.04f
 /* 前摆相 ②a / ⑤a：对侧三足水平前摆、重心前移，仅再加强撑地腿「上下轴」刚度，减轻该段主体下坠 */
-#define R04_FWD_SWING_STANCE_UD_KP_EXTRA 1.22f
-#define R04_FWD_SWING_STANCE_UD_KD_EXTRA 1.10f
+#define R04_FWD_SWING_STANCE_UD_KP_EXTRA 1.10f
+#define R04_FWD_SWING_STANCE_UD_KD_EXTRA 1.04f
 /* ②a/⑤a 前摆平移：三条撑地腿 ud 整体再略加（与 SWING_STANCE_UD_EXTRA 叠乘；不含抬腿①④） */
-#define R04_FWD_SWING_TRANS_TRIPOD_UD_KP_MUL 1.10f
-#define R04_FWD_SWING_TRANS_TRIPOD_UD_KD_MUL 1.07f
+#define R04_FWD_SWING_TRANS_TRIPOD_UD_KP_MUL 1.04f
+#define R04_FWD_SWING_TRANS_TRIPOD_UD_KD_MUL 1.04f
 /* 同上平移相：左右仅单足一侧竖直轴再叠乘（与 R04_FWD_SWING_SINGLE_SIDE_UD_IDX_* 对应） */
-#define R04_FWD_SWING_SINGLE_SIDE_UD_KP_MUL 1.27f
-#define R04_FWD_SWING_SINGLE_SIDE_UD_KD_MUL 1.18f
-#define R04_FWD_SWING_SINGLE_SIDE_UD_IDX_STEP1 3U /* 腿2 ud，左列单撑 */
-#define R04_FWD_SWING_SINGLE_SIDE_UD_IDX_STEP6 9U /* 腿5 ud，右列单撑 */
-/* ②b(step2)/⑤b(step7) 摆动足落地相：落足腿再叠乘；步前半段 ud 再抬 kd，抑砸地 */
-#define R04_FWD_LANDING_KP_MUL          0.68f
-#define R04_FWD_LANDING_KD_MUL          1.78f
-#define R04_FWD_LANDING_UD_KD_MUL       1.52f
-#define R04_FWD_LANDING_TOUCH_UD_KD_MUL 1.24f
-/* 原地转向：在爬行落地叠乘之上再软化（②b/⑤b）；仅摆腿落地腿 */
-#define R04_TURN_LANDING_KP_EXTRA_MUL       0.78f
+#define R04_FWD_SWING_SINGLE_SIDE_UD_KP_MUL 1.14f
+#define R04_FWD_SWING_SINGLE_SIDE_UD_KD_MUL 1.10f
+#define R04_FWD_SWING_SINGLE_SIDE_UD_IDX_STEP1 3U /* ②a：腿2(左中) 单撑加强，与 STEP6 成对 */
+#define R04_FWD_SWING_SINGLE_SIDE_UD_IDX_STEP6 9U /* ⑤a：腿5(右中) 单撑加强；倍率与 STEP1 必相同 */
+/* ②b(step2)/⑤b(step7) 摆动足落地相：落足腿再叠乘；kp 更软、kd 吃速度，减轻砸地声 */
+#define R04_FWD_LANDING_KP_MUL          0.48f
+#define R04_FWD_LANDING_KD_MUL          2.08f
+#define R04_FWD_LANDING_UD_KD_MUL       1.82f
+#define R04_FWD_LANDING_TOUCH_UD_KD_MUL 1.42f
+/* ②b/⑤b：摆腿落地时对侧撑地 ud 略顶即可；过大则整机发「死」、声大 */
+#define R04_FWD_LANDING_STANCE_UD_KP_MUL  1.28f
+#define R04_FWD_LANDING_STANCE_UD_KD_MUL  1.16f
+/* 同上：步前半段负载突变略顶 */
+#define R04_FWD_LANDING_STANCE_INSTANT_UD_KP_MUL  1.08f
+#define R04_FWD_LANDING_STANCE_INSTANT_UD_KD_MUL  1.06f
+/* 原地转向：落地摆腿略软于前进；过小则空中平移后落地机身顶不起来 */
+#define R04_TURN_LANDING_KP_EXTRA_MUL       0.93f
 #define R04_TURN_LANDING_KD_EXTRA_MUL       1.10f
 #define R04_TURN_LANDING_TOUCH_UD_KD_EXTRA_MUL 1.12f
-/* ①(step0)/④(step5) 抬腿相：对侧三足撑地 ud 加强，抑抬腿时机身下沉 */
-#define R04_FWD_TRIPOD_LIFT_STANCE_UD_KP_MUL   1.28f
-#define R04_FWD_TRIPOD_LIFT_STANCE_UD_KD_MUL   1.22f
-#define R04_FWD_TRIPOD_LIFT_INSTANT_UD_KP_MUL  1.20f
-#define R04_FWD_TRIPOD_LIFT_INSTANT_UD_KD_MUL  1.16f
+/* ①(step0)/④(step5) 抬腿相：对侧三足撑地 ud 略加强以抑下沉；过大易「地上腿往上顶」，实机可再调 */
+#define R04_FWD_TRIPOD_LIFT_STANCE_UD_KP_MUL   1.08f
+#define R04_FWD_TRIPOD_LIFT_STANCE_UD_KD_MUL   1.08f
+#define R04_FWD_TRIPOD_LIFT_INSTANT_UD_KP_MUL  1.04f
+#define R04_FWD_TRIPOD_LIFT_INSTANT_UD_KD_MUL  1.04f
 /* ③④⑥（step3~4、8~9）六足同时撑地：全部 ud 略降 kp、略升 kd，减轻竖直「上顶」、起伏反差 */
 #define R04_FWD_HEX_SUPPORT_UD_KP_MUL  0.86f
 #define R04_FWD_HEX_SUPPORT_UD_KD_MUL  1.15f
@@ -100,20 +109,28 @@ extern DMA_HandleTypeDef hdma_tim3_ch1;
 #define R04_FWD_SETTLE_EXTRA_MS     (42U)
 /* 爬行抬腿竖直目标角幅值（度）；略小抬足更低，过小易拖地 */
 #define R04_CRAWL_LIFT_UD_DEG       (24.0f)
-/* 爬行水平摆幅（度）；③⑥ 插值中点为一半 */
-#define R04_CRAWL_SWING_FB_DEG       (22.0f)
-#define R04_CRAWL_PUSH_HALF_FB_DEG (11.0f)
-/* 原地简化转向：小水平差动（度）、统一慢步长；无③④蹬伸相 */
-#define R04_TURN_SIMPLE_STEP_MS      (900U)
-#define R04_TURN_SIMPLE_YAW_FB_DEG   (10.0f)
-#define R04_TURN_SETTLE_EXTRA_MS     (90U) /* 转向专用到位等待上限增量，与 FWD_SETTLE 叠用 */
+/* 爬行水平摆幅（度）；③⑥ 蹬地插值为半幅（≈ SWING/2） */
+#define R04_CRAWL_SWING_FB_DEG       (34.0f)
+#define R04_CRAWL_PUSH_HALF_FB_DEG (17.0f)
+/* ①/④ 抬腿时撑地足水平偏置（随 SWING 28→34 同比） */
+#define R04_CRAWL_LIFT_STANCE_FB_DEG (28.0f)
+/* 原地转向：平移式；每步保持时间（过短易跟不上，可按实机微调） */
+#define R04_TURN_SIMPLE_STEP_MS      (175U)
+#define R04_TURN_SETTLE_EXTRA_MS     (12U) /* 转向专用到位等待上限增量，与 FWD_SETTLE 叠用 */
+/*
+ * 原地转向水平角 P（度），与前进爬行 R04_CRAWL_SWING_FB_DEG 无关。
+ * 约定 P=30：三足 A 抬起 → 空中水平至 +P → 落地；六足同时水平 −P「蹬」→ A 回 0°、B 至 −P；
+ * 再抬 B（在 −P）→ 空中至 +P → 落地；再六足 −P → B 回 0°、A 至 −P，循环。
+ * 仅改此处即可改平移幅度。
+ */
+#define R04_TURN_PLANAR_DEG          (30.0f)
 /* 摇杆回中后等待多久才允许步态；0=使能后立即响应（仅 Sbus[4] 与回连有效时仍需回中） */
 #define R04_REMOTE_ARM_MS 0U
 #define R04_CONTROL_DISABLE_TH (-0.5f)
 #define R04_CONTROL_ENABLE_TH  (0.5f)
 /* Sbus[4] 使能后偶数轴相对使能前再“下压”撑起机身（度），符号可按实机反向改 */
-/* 使能瞬间偶数轴相对“趴地”姿态多压下的角度；越大机身抬得越高，过小撑不起来，可实机微调（仅改高度，不改 MIT 力度） */
-#define R04_BODY_LIFT_EVEN_DEG (23.0f)
+/* 使能瞬间偶数轴相对“趴地”姿态多压下的角度；越大底盘离地越高，过小撑不起来，可实机微调（仅改高度，不改 MIT 力度） */
+#define R04_BODY_LIFT_EVEN_DEG (30.0f)
 /* 失能后：各轴目标从当前角随时间线性变化，偶数轴(ud)落到使能前趴地角 R04_EvenPreEnableDeg；时长 ms（与 1ms 任务一致） */
 #define R04_EVEN_RAMP_DOWN_MS  (5000U)
 /* 跟踪上述角度轨迹时的 MIT 参数（全程不变，靠目标角线性落下） */
@@ -127,7 +144,7 @@ extern DMA_HandleTypeDef hdma_tim3_ch1;
 /* 腿6=电机11/12：仅前进爬行可单独处理符号。若仅腿6「水平」反了：开关 R04_M11_FORWARD_FB_INVERT；若「竖直」反了：开 R04_M12_FORWARD_UD_INVERT */
 #define R04_M11_FORWARD_FB_INVERT 1
 #define R04_M12_FORWARD_UD_INVERT 0
-/* 取反与零位之后叠加（度），装配/表意微调；一般保持 0 */
+/* 仅腿6(m11/m12)微调；若改左右对称，优先查机械同构再动 R04_LEG6_*（仅一侧会引入左右差） */
 #define R04_LEG6_FB_TRIM_DEG (0.0f)
 #define R04_LEG6_UD_TRIM_DEG (0.0f)
 
@@ -174,6 +191,55 @@ typedef struct
 	uint16_t step_tick;
 } R04_ActionRuntime;
 
+/*
+ * 观察步态用：每步保持时间 × 该倍率，轨迹 speed ÷ 该倍率（与表内数值无关）。
+ * 改回 1U 即恢复「当前表定」速度与步频。
+ */
+#define R04_GAIT_OBSERVE_SLOWDOWN_MUL  10U
+/* Sbus[5]：[-1,1] 映射为步态速度倍率 [1,8]（最小 1×、最大 8×）；与 OBSERVE 叠乘 */
+#define R04_GAIT_SBUS_SPEED_CH 5
+
+static float R04_GaitSpeedMulFromSbus(void)
+{
+	float v = Sbus_Value[R04_GAIT_SBUS_SPEED_CH];
+	if (v < -1.0f)
+	{
+		v = -1.0f;
+	}
+	else if (v > 1.0f)
+	{
+		v = 1.0f;
+	}
+	return 1.0f + (v + 1.0f) * 3.5f;
+}
+
+/* 左转/右转：在 Sbus[5] 倍率上再 ×1.2，比前进/平移约快 20% */
+#define R04_TURN_GAIT_SPEED_BOOST_MUL  1.2f
+
+static float R04_GaitUserMulForAction(R04_ActionId action_id, float sbus_mul)
+{
+	if ((action_id == R04_ACTION_TURN_LEFT) || (action_id == R04_ACTION_TURN_RIGHT))
+	{
+		return sbus_mul * R04_TURN_GAIT_SPEED_BOOST_MUL;
+	}
+	return sbus_mul;
+}
+
+static uint32_t R04_StepHoldMsScaled(const R04_ActionStep *step, float gait_user_mul)
+{
+	float t = (float)step->hold_ms * (float)R04_GAIT_OBSERVE_SLOWDOWN_MUL / gait_user_mul;
+	if (t < 1.0f)
+	{
+		t = 1.0f;
+	}
+	return (uint32_t)(t + 0.5f);
+}
+
+static float R04_StepSpeedScaled(float speed, float gait_user_mul)
+{
+	return speed * gait_user_mul / (float)R04_GAIT_OBSERVE_SLOWDOWN_MUL;
+}
+
 #define R04_STEP(hold_ms, speed, torque, kp, kd, m1, m2, m3, m4, m5, m6, m7, m8, m9, m10, m11, m12) \
 	{{(m1), (m2), (m3), (m4), (m5), (m6), (m7), (m8), (m9), (m10), (m11), (m12)}, (hold_ms), (speed), (torque), (kp), (kd)}
 
@@ -210,65 +276,62 @@ static const R04_ActionStep R04_ForwardCrawlSteps[] =
 	/*
 	 * 腿号：1 左上(m1-2) 2 左中(m3-4) 3 左下(m5-6) 4 右下(m7-8) 5 右中(m9-10) 6 右上(m11-12)
 	 * 三足 A=腿1、3、5   三足 B=腿2、4、6
-	 * 共 10 步 loop：
-	 *   ①②a②b：A 抬→前摆→落，B 不动
-	 *   ③a③b：六条腿水平轴一起后蹬（机体前移）；末态 A 水平≈中位(0)，B 水平≈后侧
-	 *   ④⑤a⑤b：B 抬→前摆→落，A 保持③b
-	 *   ⑥a⑥b：六条腿一起后蹬；末态 B 水平≈中位，A 水平≈后侧 → 回①
+	 * 水平角约定：A/B 前摆同幅 ±30°（腿5/腿4 等为左右镜像）；蹬伸末 A=0/B=−30 与 B=0/A=−30 交替；③a/⑥a 为起止中点
+	 * 共 10 步 loop；首帧 FromMid ① 仍水平中位
 	 * hold：再减半，步频再约×2；③ 仅 19ms 极易跟不上，实机可单独加长
 	 */
 
-	/* ① 三足 A(1、3、5) 抬起；B(2、4、6) 不动 */
-	R04_STEP(26U, 1.0f, 0.0f, 44.0f, 0.58f,
-	        -18.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-18.0f, R04_CRAWL_LIFT_UD_DEG,
-	          0.0f,  0.0f, 18.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
-	/* ②a A 完全抬起后向前摆；B 不动（略低 kp、略高 kd 基底，配合代码减晃） */
-	R04_STEP(70U, 0.0f, 0.0f, 20.0f, 0.82f,
-	         R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,
-	          0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
-	/* ②b A 放下（基底略软+略阻尼；落足腿另在 Apply 中叠乘） */
-	R04_STEP(66U, 0.36f, 0.0f, 11.0f, 1.05f,
-	         R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,
-	          0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f),
-	/* ③a 全体后蹬前半：六腿水平(fb)一起从 ②b 向「A 中、B 后」插值 */
-	R04_STEP(19U, 1.0f, 0.0f, 42.0f, 0.58f,
-	         R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,-R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,
-	         R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,-R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, -R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f),
-	/* ③b 全体后蹬末：腿1、3、5 水平≈中位；腿2、4、6 水平≈后侧（机体已前移） */
-	R04_STEP(19U, 1.0f, 0.0f, 42.0f, 0.58f,
-	          0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,
-	         R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f, -R04_CRAWL_SWING_FB_DEG,  0.0f),
-	/* ④ B 抬起；A 保持 ③b（腿6 水平保持③b 后侧 -SWING_FB，与腿4 保持 m7 同理，只抬竖直） */
-	R04_STEP(26U, 1.0f, 0.0f, 44.0f, 0.58f,
-	          0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
-	         R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG),
-	/* ⑤a B 前摆；A 不动 */
-	R04_STEP(70U, 0.0f, 0.0f, 20.0f, 0.82f,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
-	        -R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG),
-	/* ⑤b B 落地 */
-	R04_STEP(66U, 0.36f, 0.0f, 11.0f, 1.05f,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,
-	        -R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f),
-	/* ⑥a 全体后蹬前半：从 ⑤b 向「B 中、A 后」插值 */
-	R04_STEP(19U, 1.0f, 0.0f, 42.0f, 0.58f,
-	        -R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,-R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,
-	        -R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f),
-	/* ⑥b 全体后蹬末：腿2、4、6 水平≈中位；腿1、3、5 水平≈后侧 → 接下一循环 ① */
-	R04_STEP(38U, 1.0f, 0.0f, 42.0f, 0.58f,
-	        -R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f,
-	         0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f),
+	/* ① A 抬：水平保持 −30°（与⑥b 末一致）；B 不动 */
+	R04_STEP(26U, 1.0f, 0.0f, 36.0f, 0.56f,
+	        -30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-30.0f, R04_CRAWL_LIFT_UD_DEG,
+	          0.0f,  0.0f, 30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
+	/* ②a A 空中至 +30°（腿5 镜像 −30°） */
+	R04_STEP(70U, 0.0f, 0.0f, 18.0f, 0.78f,
+	         30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, 30.0f, R04_CRAWL_LIFT_UD_DEG,
+	          0.0f,  0.0f,-30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
+	/* ②b A 落地 30° */
+	R04_STEP(66U, 0.20f, 0.0f, 9.5f, 1.18f,
+	         30.0f,  0.0f,  0.0f,  0.0f, 30.0f,  0.0f,
+	          0.0f,  0.0f,-30.0f,  0.0f,  0.0f,  0.0f),
+	/* ③a 六腿一起后蹬插值中点（相对 ②b→③b） */
+	R04_STEP(19U, 1.0f, 0.0f, 36.0f, 0.56f,
+	         15.0f,  0.0f,-15.0f,  0.0f, 15.0f,  0.0f,
+	         15.0f,  0.0f,-15.0f,  0.0f,-15.0f,  0.0f),
+	/* ③b A→0°，B→−30°（镜像） */
+	R04_STEP(19U, 1.0f, 0.0f, 36.0f, 0.56f,
+	          0.0f,  0.0f,-30.0f,  0.0f,  0.0f,  0.0f,
+	         30.0f,  0.0f,  0.0f,  0.0f,-30.0f,  0.0f),
+	/* ④ B 抬；姿态同③b */
+	R04_STEP(26U, 1.0f, 0.0f, 36.0f, 0.56f,
+	          0.0f,  0.0f,-30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
+	         30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-30.0f, -R04_CRAWL_LIFT_UD_DEG),
+	/* ⑤a B 前摆至 30°（与②a A 同幅；镜像） */
+	R04_STEP(70U, 0.0f, 0.0f, 18.0f, 0.78f,
+	          0.0f,  0.0f, 30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
+	        -30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, 30.0f, -R04_CRAWL_LIFT_UD_DEG),
+	/* ⑤b B 落地 30° */
+	R04_STEP(66U, 0.20f, 0.0f, 9.5f, 1.18f,
+	          0.0f,  0.0f, 30.0f,  0.0f,  0.0f,  0.0f,
+	        -30.0f,  0.0f,  0.0f,  0.0f, 30.0f,  0.0f),
+	/* ⑥a 六腿一起后蹬插值中点（⑤b B=±30 → ⑥b B=0，与 A 中点一致） */
+	R04_STEP(19U, 1.0f, 0.0f, 36.0f, 0.56f,
+	        -15.0f,  0.0f, 15.0f,  0.0f,-15.0f,  0.0f,
+	        -15.0f,  0.0f, 15.0f,  0.0f, 15.0f,  0.0f),
+	/* ⑥b B→0°，A→−30°（镜像）→ 接① */
+	R04_STEP(38U, 1.0f, 0.0f, 36.0f, 0.56f,
+	        -30.0f,  0.0f,  0.0f,  0.0f,-30.0f,  0.0f,
+	          0.0f,  0.0f, 30.0f,  0.0f,  0.0f,  0.0f),
 };
 
 /* 与上表步①同参数，但三足 A 水平角为 0；首次切入前进/后退共用这一步 */
 static const R04_ActionStep R04_ForwardCrawlStep1_FromMid =
-	R04_STEP(26U, 1.0f, 0.0f, 44.0f, 0.58f,
+	R04_STEP(26U, 1.0f, 0.0f, 36.0f, 0.56f,
 	          0.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,  0.0f, R04_CRAWL_LIFT_UD_DEG,
 	          0.0f,  0.0f,  0.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f);
 
-/* 转向切入步①：几何同 FromMid，hold 与简化转向步① 一致 */
+/* 转向切入：三足 A 水平全 0 起抬（仅首次/重入遥控用 R04_CrawlUseMidStep1） */
 static const R04_ActionStep R04_TurnYawStep1_FromMid =
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.42f, 0.0f, 40.0f, 0.56f,
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.38f, 0.0f, 38.0f, 0.57f,
 	          0.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,  0.0f, R04_CRAWL_LIFT_UD_DEG,
 	          0.0f,  0.0f,  0.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f);
 
@@ -276,116 +339,125 @@ static const R04_ActionStep R04_TurnYawStep1_FromMid =
 static const R04_ActionStep R04_BackwardCrawlSteps[] =
 {
 	/*  m1     m2     m3     m4     m5     m6     m7     m8     m9    m10    m11    m12  */
-	/* ① */
-	R04_STEP(26U, 1.0f, 0.0f, 44.0f, 0.58f,
-	         18.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, 18.0f, R04_CRAWL_LIFT_UD_DEG,
-	          0.0f,  0.0f,-18.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
+	/* ①（前进水平取反） */
+	R04_STEP(26U, 1.0f, 0.0f, 36.0f, 0.56f,
+	         30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, 30.0f, R04_CRAWL_LIFT_UD_DEG,
+	          0.0f,  0.0f,-30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
 	/* ②a */
-	R04_STEP(70U, 0.0f, 0.0f, 20.0f, 0.82f,
-	        -R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
+	R04_STEP(70U, 0.0f, 0.0f, 18.0f, 0.78f,
+	        -30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-30.0f, R04_CRAWL_LIFT_UD_DEG,
+	          0.0f,  0.0f, 30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
 	/* ②b */
-	R04_STEP(66U, 0.36f, 0.0f, 11.0f, 1.05f,
-	        -R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f),
+	R04_STEP(66U, 0.20f, 0.0f, 9.5f, 1.18f,
+	        -30.0f,  0.0f,  0.0f,  0.0f,-30.0f,  0.0f,
+	          0.0f,  0.0f, 30.0f,  0.0f,  0.0f,  0.0f),
 	/* ③a */
-	R04_STEP(19U, 1.0f, 0.0f, 42.0f, 0.58f,
-	        -R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,-R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,
-	        -R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f),
+	R04_STEP(19U, 1.0f, 0.0f, 36.0f, 0.56f,
+	        -15.0f,  0.0f, 15.0f,  0.0f,-15.0f,  0.0f,
+	        -15.0f,  0.0f, 15.0f,  0.0f, 15.0f,  0.0f),
 	/* ③b */
-	R04_STEP(19U, 1.0f, 0.0f, 42.0f, 0.58f,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,
-	        -R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f),
+	R04_STEP(19U, 1.0f, 0.0f, 36.0f, 0.56f,
+	          0.0f,  0.0f, 30.0f,  0.0f,  0.0f,  0.0f,
+	        -30.0f,  0.0f,  0.0f,  0.0f, 30.0f,  0.0f),
 	/* ④ */
-	R04_STEP(26U, 1.0f, 0.0f, 44.0f, 0.58f,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
-	        -R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG),
+	R04_STEP(26U, 1.0f, 0.0f, 36.0f, 0.56f,
+	          0.0f,  0.0f, 30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
+	        -30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, 30.0f, -R04_CRAWL_LIFT_UD_DEG),
 	/* ⑤a */
-	R04_STEP(70U, 0.0f, 0.0f, 20.0f, 0.82f,
-	          0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
-	         R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG),
+	R04_STEP(70U, 0.0f, 0.0f, 18.0f, 0.78f,
+	          0.0f,  0.0f,-30.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
+	         30.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-30.0f, -R04_CRAWL_LIFT_UD_DEG),
 	/* ⑤b */
-	R04_STEP(66U, 0.36f, 0.0f, 11.0f, 1.05f,
-	          0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,
-	         R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f),
-	/* ⑥a */
-	R04_STEP(19U, 1.0f, 0.0f, 42.0f, 0.58f,
-	         R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,-R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f, R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,
-	         R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,-R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f,-R04_CRAWL_PUSH_HALF_FB_DEG,  0.0f),
+	R04_STEP(66U, 0.20f, 0.0f, 9.5f, 1.18f,
+	          0.0f,  0.0f,-30.0f,  0.0f,  0.0f,  0.0f,
+	         30.0f,  0.0f,  0.0f,  0.0f,-30.0f,  0.0f),
+	/* ⑥a（与前进 ⑥a 水平 fb 取反） */
+	R04_STEP(19U, 1.0f, 0.0f, 36.0f, 0.56f,
+	         15.0f,  0.0f,-15.0f,  0.0f, 15.0f,  0.0f,
+	         15.0f,  0.0f,-15.0f,  0.0f,-15.0f,  0.0f),
 	/* ⑥b */
-	R04_STEP(38U, 1.0f, 0.0f, 42.0f, 0.58f,
-	         R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,
-	          0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f),
+	R04_STEP(38U, 1.0f, 0.0f, 36.0f, 0.56f,
+	         30.0f,  0.0f,  0.0f,  0.0f, 30.0f,  0.0f,
+	          0.0f,  0.0f,-30.0f,  0.0f,  0.0f,  0.0f),
 };
 
 /*
- * 原地左转(CCW)：7 步闭环，无③⑥蹬伸相；慢速统一 hold；右转共用本表，R04_StepTargetDeg 对 fb 取反。
- * 逻辑步序 0..6 对应爬行 MIT 辅助下标 0,1,2,5,6,7,9（见 MS_Task 中 fwd_idx 映射）。
+ * 原地左转（水平几何，P=R04_TURN_PLANAR_DEG，默认 30°）：
+ *  0 起抬 A（循环步 0：A 已在 −P）；首帧 FromMid 时 A 自 0° 起抬；
+ *  1 空中 A 水平至 +P；2 A 落地 +P；
+ *  3 六足水平各 −P（蹬）→ A→0°、B→−P；
+ *  4 抬 B；5 空中 B 自 −P 至 +P；6 B 落地 +P；
+ *  7 六足各 −P → B→0°、A→−P，接步 0。
+ * 右转：同表，R04_StepTargetDeg 对 fb 取反。MIT 步 0..7 → fwd 0,1,2,4,5,6,7,9。
  */
 static const R04_ActionStep R04_TurnInPlaceLeftSteps[] =
 {
-	/* 0 → MIT 0：① 抬 A */
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.42f, 0.0f, 40.0f, 0.56f,
-	        -18.0f, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-18.0f, R04_CRAWL_LIFT_UD_DEG,
-	          0.0f,  0.0f, 18.0f, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
-	/* 1 → MIT 1：②a A 小偏航摆腿 */
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.0f, 0.0f, 18.0f, 0.82f,
-	         R04_TURN_SIMPLE_YAW_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,-R04_TURN_SIMPLE_YAW_FB_DEG, R04_CRAWL_LIFT_UD_DEG,
-	          0.0f,  0.0f, R04_TURN_SIMPLE_YAW_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
-	/* 2 → MIT 2：②b A 落足 */
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.30f, 0.0f, 9.5f, 1.10f,
-	         R04_TURN_SIMPLE_YAW_FB_DEG,  0.0f,  0.0f,  0.0f,-R04_TURN_SIMPLE_YAW_FB_DEG,  0.0f,
-	          0.0f,  0.0f, R04_TURN_SIMPLE_YAW_FB_DEG,  0.0f,  0.0f,  0.0f),
-	/* 3 → MIT 5：④ 抬 B；A 保持②b 偏航支撑（避免跳变到爬行③b） */
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.42f, 0.0f, 40.0f, 0.56f,
-	         R04_TURN_SIMPLE_YAW_FB_DEG,  0.0f,-R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,-R04_TURN_SIMPLE_YAW_FB_DEG,  0.0f,
-	         R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG, R04_TURN_SIMPLE_YAW_FB_DEG,  0.0f,-R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG),
-	/* 4 → MIT 6：⑤a B 前摆 */
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.0f, 0.0f, 18.0f, 0.82f,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
-	        -R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG, -R04_CRAWL_LIFT_UD_DEG),
-	/* 5 → MIT 7：⑤b B 落地 */
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.30f, 0.0f, 9.5f, 1.10f,
-	          0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,
-	        -R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f),
-	/* 6 → MIT 9：⑥b 末态，接下一圈 ① */
-	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.42f, 0.0f, 38.0f, 0.58f,
-	        -R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f,-R04_CRAWL_SWING_FB_DEG,  0.0f,
-	         0.0f,  0.0f, R04_CRAWL_SWING_FB_DEG,  0.0f,  0.0f,  0.0f),
+	/* 0 MIT0：循环用（步 7 后 A 在 -P 起抬）；首次步 0 用 R04_TurnYawStep1_FromMid */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.52f, 0.0f, 38.0f, 0.57f,
+	         -R04_TURN_PLANAR_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, -R04_TURN_PLANAR_DEG, R04_CRAWL_LIFT_UD_DEG,
+	          0.0f,  0.0f, -R04_TURN_PLANAR_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
+	/* 1 MIT1：A 空中水平 +P（speed/kp 同前进 ②a：0 / 20） */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.0f, 0.0f, 22.0f, 0.82f,
+	         R04_TURN_PLANAR_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, R04_TURN_PLANAR_DEG, R04_CRAWL_LIFT_UD_DEG,
+	          0.0f,  0.0f, R04_TURN_PLANAR_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f),
+	/* 2 MIT2：A 落地 +P（基底同前进 ②b，便于撑地腿叠乘后顶起机身） */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.48f, 0.0f, 11.0f, 1.05f,
+	         R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f, R04_TURN_PLANAR_DEG,  0.0f,
+	          0.0f,  0.0f, R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f),
+	/* 3 MIT4：各腿水平 fb 均 −P（speed/kp/kd 同前进 ③b；fb 抑振见 R04_TurnPlanarShiftFbOscMotor） */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 1.0f, 0.0f, 42.0f, 0.58f,
+	          0.0f,  0.0f, -R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f,
+	         -R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f, -R04_TURN_PLANAR_DEG,  0.0f),
+	/* 4 MIT5：抬 B；竖直同前进④ */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.52f, 0.0f, 38.0f, 0.57f,
+	          0.0f,  0.0f, -R04_TURN_PLANAR_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
+	         -R04_TURN_PLANAR_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, -R04_TURN_PLANAR_DEG, -R04_CRAWL_LIFT_UD_DEG),
+	/* 5 MIT6：B 空中水平 +P（同前进 ⑤a：0 / 20） */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.0f, 0.0f, 22.0f, 0.82f,
+	          0.0f,  0.0f, R04_TURN_PLANAR_DEG, R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f,
+	         R04_TURN_PLANAR_DEG, -R04_CRAWL_LIFT_UD_DEG,  0.0f,  0.0f, R04_TURN_PLANAR_DEG, -R04_CRAWL_LIFT_UD_DEG),
+	/* 6 MIT7：B 落地 +P（同 ②b 基底） */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 0.48f, 0.0f, 11.0f, 1.05f,
+	          0.0f,  0.0f, R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f,
+	         R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f, R04_TURN_PLANAR_DEG,  0.0f),
+	/* 7 MIT9：六足再各 −P（同前进 ⑥b + 全腿 fb 抑振） */
+	R04_STEP(R04_TURN_SIMPLE_STEP_MS, 1.0f, 0.0f, 42.0f, 0.58f,
+	         -R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f, -R04_TURN_PLANAR_DEG,  0.0f,
+	          0.0f,  0.0f, -R04_TURN_PLANAR_DEG,  0.0f,  0.0f,  0.0f),
 };
 
-/* 平移：±18°；整组 kp=36、kd=0.55、speed=0.58（三足承重） */
+/* 平移：水平约 ±14°/±18°、竖直抬足约 26°；整组 kp=36、kd=0.55、speed=0.58（三足承重） */
 static const R04_ActionStep R04_StrafeLeftSteps[] =
 {
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	         -8.0f, 18.0f, -6.0f, 0.0f,  8.0f, 18.0f,
-	         -8.0f, 0.0f,  6.0f, 18.0f,  8.0f, 0.0f),
+	        -14.0f, 26.0f,-10.0f, 0.0f, 14.0f, 26.0f,
+	        -14.0f, 0.0f, 10.0f, 26.0f, 14.0f, 0.0f),
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	        -10.0f, 0.0f,  8.0f, 0.0f, 10.0f, 0.0f,
-	        -10.0f, 0.0f,  8.0f, 0.0f, 10.0f, 0.0f),
+	        -18.0f, 0.0f, 14.0f, 0.0f, 18.0f, 0.0f,
+	        -18.0f, 0.0f, 14.0f, 0.0f, 18.0f, 0.0f),
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	          8.0f, 0.0f, -6.0f, 18.0f, -8.0f, 0.0f,
-	          8.0f, 18.0f, -6.0f, 0.0f, -8.0f, 18.0f),
+	         14.0f, 0.0f,-10.0f, 26.0f,-14.0f, 0.0f,
+	         14.0f, 26.0f,-10.0f, 0.0f,-14.0f, 26.0f),
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	         10.0f, 0.0f, -8.0f, 0.0f,-10.0f, 0.0f,
-	         10.0f, 0.0f, -8.0f, 0.0f,-10.0f, 0.0f),
+	         18.0f, 0.0f,-14.0f, 0.0f,-18.0f, 0.0f,
+	         18.0f, 0.0f,-14.0f, 0.0f,-18.0f, 0.0f),
 };
 
 /* 右平移：与左对称，增益同左 */
 static const R04_ActionStep R04_StrafeRightSteps[] =
 {
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	          8.0f, 18.0f,  6.0f, 0.0f, -8.0f, 18.0f,
-	          8.0f, 0.0f, -6.0f, 18.0f, -8.0f, 0.0f),
+	         14.0f, 26.0f, 10.0f, 0.0f,-14.0f, 26.0f,
+	         14.0f, 0.0f,-10.0f, 26.0f,-14.0f, 0.0f),
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	         10.0f, 0.0f, -8.0f, 0.0f,-10.0f, 0.0f,
-	         10.0f, 0.0f, -8.0f, 0.0f,-10.0f, 0.0f),
+	         18.0f, 0.0f,-14.0f, 0.0f,-18.0f, 0.0f,
+	         18.0f, 0.0f,-14.0f, 0.0f,-18.0f, 0.0f),
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	         -8.0f, 0.0f,  6.0f, 18.0f,  8.0f, 0.0f,
-	         -8.0f, 18.0f,  6.0f, 0.0f,  8.0f, 18.0f),
+	        -14.0f, 0.0f, 10.0f, 26.0f, 14.0f, 0.0f,
+	        -14.0f, 26.0f, 10.0f, 0.0f, 14.0f, 26.0f),
 	R04_STEP(280U, 0.58f, 0.0f, 36.0f, 0.55f,
-	        -10.0f, 0.0f,  8.0f, 0.0f, 10.0f, 0.0f,
-	        -10.0f, 0.0f,  8.0f, 0.0f, 10.0f, 0.0f),
+	        -18.0f, 0.0f, 14.0f, 0.0f, 18.0f, 0.0f,
+	        -18.0f, 0.0f, 14.0f, 0.0f, 18.0f, 0.0f),
 };
 
 static const R04_ActionGroup R04_ActionGroups[] =
@@ -459,13 +531,12 @@ static void R04_DisableAllMotors(void)
 	}
 }
 
+/* 通道与动作成对：前后/左右转/左右平移 均 ± 对称；若实机左右反了，应交换对应通道或此处符号，勿只改单侧步表 */
 static R04_ActionId R04_SelectActionFromRemote(void)
 {
 	float forward_cmd = Sbus_Value[2];
-	/* [0]：左右平移 */
-	float strafe_cmd = Sbus_Value[0];
-	/* [3]：原地转向，>0 左转、<0 右转 */
-	float yaw_cmd = Sbus_Value[3];
+	float strafe_cmd = Sbus_Value[0];  /* 左负右正 → STRAFE_LEFT / STRAFE_RIGHT */
+	float yaw_cmd = Sbus_Value[3];     /* 左正右负 → TURN_LEFT / TURN_RIGHT */
 
 	if (Sbus_Connect_Flag == 0U)
 	{
@@ -674,6 +745,24 @@ static uint8_t R04_ForwardTripodSwingTranslationAllStanceUdMotor(uint8_t step_id
 	return 0U;
 }
 
+/* ②b：摆腿落地时 B 组撑地 ud 3,7,11；⑤b：A 组撑地 ud 1,5,9（与抬腿相撑地三足同序） */
+static uint8_t R04_ForwardTripodLandingStanceUdMotor(uint8_t step_idx, uint8_t motor_idx)
+{
+	if ((motor_idx & 1U) == 0U)
+	{
+		return 0U;
+	}
+	if (step_idx == 2U)
+	{
+		return ((motor_idx == 3U) || (motor_idx == 7U) || (motor_idx == 11U)) ? 1U : 0U;
+	}
+	if (step_idx == 7U)
+	{
+		return ((motor_idx == 1U) || (motor_idx == 5U) || (motor_idx == 9U)) ? 1U : 0U;
+	}
+	return 0U;
+}
+
 /* ②b：A 组(1,3,5)落足；⑤b：B 组(2,4,6)落足 */
 static uint8_t R04_CrawlLandingPlaceMotor(uint8_t step_idx, uint8_t motor_idx)
 {
@@ -702,10 +791,21 @@ static uint8_t R04_ForwardHexSupportUdMotor(uint8_t step_idx, uint8_t motor_idx)
 	return ((step_idx == 3U) || (step_idx == 4U) || (step_idx == 8U) || (step_idx == 9U)) ? 1U : 0U;
 }
 
+/* 原地转向步 3/7（MIT 映射 fwd=4、9）：六足同动水平平移；与前进 ③b/⑥b 同 MIT 序号但 hold 长，补与 ②a 末段同款的 fb 抑振 */
+static uint8_t R04_TurnPlanarShiftFbOscMotor(uint8_t forward_step_idx, uint8_t motor_idx)
+{
+	if ((motor_idx & 1U) != 0U)
+	{
+		return 0U;
+	}
+	return ((forward_step_idx == 4U) || (forward_step_idx == 9U)) ? 1U : 0U;
+}
+
+/* 目标相对零位偏置（度）。左右一致性：右转=左转的水平系镜像（仅 fb 取反），与左转共用同一套力度与步表。 */
 static float R04_StepTargetDeg(const R04_ActionStep *step, R04_ActionId action_id, uint8_t motor_idx)
 {
 	float target_deg = step->pos_deg[motor_idx];
-	/* 右转：与左转共用步表，仅水平轴(fb，偶数 motor_idx)取反 → CW；避免与腿6 fb 取反宏叠加产生左右不对称 */
+	/* 右转：与左转共用步表，仅水平 fb（偶 motor_idx）取反；ud 不变。腿6不在此叠 M11，以免左/右转不对称 */
 	if (action_id == R04_ACTION_TURN_RIGHT)
 	{
 		if ((motor_idx & 1U) == 0U)
@@ -716,7 +816,8 @@ static float R04_StepTargetDeg(const R04_ActionStep *step, R04_ActionId action_i
 	if (R04_ACTION_USES_CRAWL_MIT(action_id))
 	{
 #if R04_M11_FORWARD_FB_INVERT
-		if (motor_idx == 10U)
+		/* 转向已在右转分支对全部水平轴取反；此处再反腿6 会导致右转身腿6 与左转身不对称 */
+		if ((motor_idx == 10U) && (action_id != R04_ACTION_TURN_LEFT) && (action_id != R04_ACTION_TURN_RIGHT))
 		{
 			target_deg = -target_deg;
 		}
@@ -771,7 +872,11 @@ static uint8_t R04_ForwardMotorsNearCommand(const R04_ActionStep *step, R04_Acti
 
 static void R04_ApplyActionStep(const R04_ActionStep *step, R04_ActionId action_id, uint8_t forward_step_idx)
 {
-	for (uint8_t idx = 0; idx < R04_MOTOR_COUNT; idx++)
+	const float gait_user_mul = R04_GaitUserMulForAction(action_id, R04_GaitSpeedMulFromSbus());
+	const uint32_t hold_ms_eff = R04_StepHoldMsScaled(step, gait_user_mul);
+	const float speed_eff = R04_StepSpeedScaled(step->speed, gait_user_mul);
+
+	for (uint8_t idx = 0U; idx < R04_MOTOR_COUNT; idx++)
 	{
 		float target_deg = R04_StepTargetDeg(step, action_id, idx);
 
@@ -802,24 +907,45 @@ static void R04_ApplyActionStep(const R04_ActionStep *step, R04_ActionId action_
 				kp *= R04_FWD_SWING_SINGLE_SIDE_UD_KP_MUL;
 				kd *= R04_FWD_SWING_SINGLE_SIDE_UD_KD_MUL;
 			}
-			if (R04_ForwardTripodLiftStanceUdMotor(forward_step_idx, idx) != 0U)
-			{
-				kp *= R04_FWD_TRIPOD_LIFT_STANCE_UD_KP_MUL;
-				kd *= R04_FWD_TRIPOD_LIFT_STANCE_UD_KD_MUL;
-				if (((uint32_t)R04_ActionState.step_tick * 2U) < (uint32_t)step->hold_ms)
+				if (R04_ForwardTripodLiftStanceUdMotor(forward_step_idx, idx) != 0U)
 				{
-					kp *= R04_FWD_TRIPOD_LIFT_INSTANT_UD_KP_MUL;
-					kd *= R04_FWD_TRIPOD_LIFT_INSTANT_UD_KD_MUL;
+					kp *= R04_FWD_TRIPOD_LIFT_STANCE_UD_KP_MUL;
+					kd *= R04_FWD_TRIPOD_LIFT_STANCE_UD_KD_MUL;
+					if (((uint32_t)R04_ActionState.step_tick * 2U) < hold_ms_eff)
+					{
+						kp *= R04_FWD_TRIPOD_LIFT_INSTANT_UD_KP_MUL;
+						kd *= R04_FWD_TRIPOD_LIFT_INSTANT_UD_KD_MUL;
+					}
+				}
+				if (R04_ForwardTripodLandingStanceUdMotor(forward_step_idx, idx) != 0U)
+				{
+					kp *= R04_FWD_LANDING_STANCE_UD_KP_MUL;
+					kd *= R04_FWD_LANDING_STANCE_UD_KD_MUL;
+					if (((uint32_t)R04_ActionState.step_tick * 2U) < hold_ms_eff)
+					{
+						kp *= R04_FWD_LANDING_STANCE_INSTANT_UD_KP_MUL;
+						kd *= R04_FWD_LANDING_STANCE_INSTANT_UD_KD_MUL;
+					}
 				}
 			}
-		}
 
 		if (R04_ACTION_USES_CRAWL_MIT(action_id) &&
 		    (R04_CrawlSwingOscFbMotor(forward_step_idx, idx) != 0U))
 		{
 			kp *= R04_SWING_FB_OSC_KP_MUL;
 			kd *= R04_SWING_FB_OSC_KD_MUL;
-			if (((uint32_t)R04_ActionState.step_tick * 2U) >= (uint32_t)step->hold_ms)
+			if (((uint32_t)R04_ActionState.step_tick * 2U) >= hold_ms_eff)
+			{
+				kd *= R04_SWING_FB_OSC_END_KD_MUL;
+			}
+		}
+		if (R04_ACTION_USES_CRAWL_MIT(action_id) &&
+		    ((action_id == R04_ACTION_TURN_LEFT) || (action_id == R04_ACTION_TURN_RIGHT)) &&
+		    (R04_TurnPlanarShiftFbOscMotor(forward_step_idx, idx) != 0U))
+		{
+			kp *= R04_SWING_FB_OSC_KP_MUL;
+			kd *= R04_SWING_FB_OSC_KD_MUL;
+			if (((uint32_t)R04_ActionState.step_tick * 2U) >= hold_ms_eff)
 			{
 				kd *= R04_SWING_FB_OSC_END_KD_MUL;
 			}
@@ -829,7 +955,7 @@ static void R04_ApplyActionStep(const R04_ActionStep *step, R04_ActionId action_
 		{
 			kp *= R04_SWING_UD_OSC_KP_MUL;
 			kd *= R04_SWING_UD_OSC_KD_MUL;
-			if (((uint32_t)R04_ActionState.step_tick * 2U) >= (uint32_t)step->hold_ms)
+			if (((uint32_t)R04_ActionState.step_tick * 2U) >= hold_ms_eff)
 			{
 				kd *= R04_SWING_UD_OSC_END_KD_MUL;
 			}
@@ -839,7 +965,7 @@ static void R04_ApplyActionStep(const R04_ActionStep *step, R04_ActionId action_
 		{
 			kp *= R04_LIFT_UD_OSC_KP_MUL;
 			kd *= R04_LIFT_UD_OSC_KD_MUL;
-			if (((uint32_t)R04_ActionState.step_tick * 2U) >= (uint32_t)step->hold_ms)
+			if (((uint32_t)R04_ActionState.step_tick * 2U) >= hold_ms_eff)
 			{
 				kd *= R04_LIFT_UD_OSC_END_KD_MUL;
 			}
@@ -852,7 +978,7 @@ static void R04_ApplyActionStep(const R04_ActionStep *step, R04_ActionId action_
 			if ((idx & 1U) != 0U)
 			{
 				kd *= R04_FWD_LANDING_UD_KD_MUL;
-				if (((uint32_t)R04_ActionState.step_tick * 2U) < (uint32_t)step->hold_ms)
+				if (((uint32_t)R04_ActionState.step_tick * 2U) < hold_ms_eff)
 				{
 					kd *= R04_FWD_LANDING_TOUCH_UD_KD_MUL;
 				}
@@ -876,7 +1002,7 @@ static void R04_ApplyActionStep(const R04_ActionStep *step, R04_ActionId action_
 
 		RobStride04_Set(R04_MotorIds[idx],
 		                R04_DEG2RAD(target_deg),
-		                step->speed,
+		                speed_eff,
 		                step->torque,
 		                kp,
 		                kd,
@@ -1280,7 +1406,7 @@ void MS_Task()
 			fwd_idx = R04_ActionState.step_idx;
 			if ((selected_action == R04_ACTION_TURN_LEFT) || (selected_action == R04_ACTION_TURN_RIGHT))
 			{
-				static const uint8_t kR04_TurnSimpleMitMap[7] = {0U, 1U, 2U, 5U, 6U, 7U, 9U};
+				static const uint8_t kR04_TurnSimpleMitMap[8] = {0U, 1U, 2U, 4U, 5U, 6U, 7U, 9U};
 				if (R04_ActionState.step_idx < (uint8_t)sizeof(kR04_TurnSimpleMitMap))
 				{
 					fwd_idx = kR04_TurnSimpleMitMap[R04_ActionState.step_idx];
@@ -1291,42 +1417,48 @@ void MS_Task()
 	}
 
 	R04_ActionState.step_tick++;
-	if (R04_ActionState.step_tick >= step->hold_ms)
 	{
-		uint8_t advance = 1U;
+		const float gait_user_mul = R04_GaitUserMulForAction(selected_action, R04_GaitSpeedMulFromSbus());
+		const uint32_t hold_scaled = R04_StepHoldMsScaled(step, gait_user_mul);
+
+		if (R04_ActionState.step_tick >= hold_scaled)
+		{
+			uint8_t advance = 1U;
 #if R04_FWD_SETTLE_WAIT
-		if (R04_ACTION_USES_CRAWL_MIT(selected_action))
-		{
-			uint32_t settle_extra = (uint32_t)R04_FWD_SETTLE_EXTRA_MS;
-			if ((selected_action == R04_ACTION_TURN_LEFT) || (selected_action == R04_ACTION_TURN_RIGHT))
+			if (R04_ACTION_USES_CRAWL_MIT(selected_action))
 			{
-				settle_extra += (uint32_t)R04_TURN_SETTLE_EXTRA_MS;
-			}
-			uint32_t max_wait = (uint32_t)step->hold_ms + settle_extra;
-			if ((uint32_t)R04_ActionState.step_tick < max_wait)
-			{
-				if (R04_ForwardMotorsNearCommand(step, selected_action) == 0U)
+				float se = (float)((uint32_t)R04_FWD_SETTLE_EXTRA_MS * (uint32_t)R04_GAIT_OBSERVE_SLOWDOWN_MUL) / gait_user_mul;
+				if ((selected_action == R04_ACTION_TURN_LEFT) || (selected_action == R04_ACTION_TURN_RIGHT))
 				{
-					advance = 0U;
+					se += (float)((uint32_t)R04_TURN_SETTLE_EXTRA_MS * (uint32_t)R04_GAIT_OBSERVE_SLOWDOWN_MUL) / gait_user_mul;
+				}
+				uint32_t settle_extra = (se < 1.0f) ? 1U : (uint32_t)(se + 0.5f);
+				uint32_t max_wait = hold_scaled + settle_extra;
+				if ((uint32_t)R04_ActionState.step_tick < max_wait)
+				{
+					if (R04_ForwardMotorsNearCommand(step, selected_action) == 0U)
+					{
+						advance = 0U;
+					}
 				}
 			}
-		}
 #endif
-		if (advance != 0U)
-		{
-			R04_ActionState.step_tick = 0U;
-			if ((R04_ActionState.step_idx + 1U) < group->step_count)
+			if (advance != 0U)
 			{
-				if (R04_ACTION_USES_CRAWL_MIT(selected_action) &&
-				    (R04_ActionState.step_idx == 0U) && (R04_CrawlUseMidStep1 != 0U))
+				R04_ActionState.step_tick = 0U;
+				if ((R04_ActionState.step_idx + 1U) < group->step_count)
 				{
-					R04_CrawlUseMidStep1 = 0U;
+					if (R04_ACTION_USES_CRAWL_MIT(selected_action) &&
+					    (R04_ActionState.step_idx == 0U) && (R04_CrawlUseMidStep1 != 0U))
+					{
+						R04_CrawlUseMidStep1 = 0U;
+					}
+					R04_ActionState.step_idx++;
 				}
-				R04_ActionState.step_idx++;
-			}
-			else if (group->loop != 0U)
-			{
-				R04_ActionState.step_idx = 0U;
+				else if (group->loop != 0U)
+				{
+					R04_ActionState.step_idx = 0U;
+				}
 			}
 		}
 	}
